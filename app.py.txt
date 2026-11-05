@@ -1,0 +1,125 @@
+import streamlit as st
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# הגדרת כיוון הדף מימין לשמאל ומראה כללי
+st.set_page_config(page_title="מודל גיאומכני לכלונסאות", layout="wide")
+
+st.title("📊 מודל גיאומכני להפרשים סופיים - כלונס עם בסיס פרבולי")
+st.markdown("---")
+
+# יצירת שני טורים בממשק: ימין לקלטים, שמאל לתוצאות וגרפים
+col_inputs, col_results = st.columns([1, 2])
+
+with col_inputs:
+    st.header("⚙️ פרמטרים ונתוני קלט")
+    
+    # 1. פרמטרים קבועים ומבניים
+    E = st.number_input("מודול אלסטיות הכלונס E (kPa)", value=30000000, step=1000000)
+    D = st.slider("קוטר הכלונס D (מטר)", min_value=0.3, max_value=2.0, value=0.6, step=0.05)
+    B = st.number_input("מקדם b (kN/m^0.5)", value=150.0, step=10.0)
+    
+    # חישובים גיאומטריים אוטומטיים
+    A = np.pi * (D**2) / 4
+    U = np.pi * D
+    dz = 1.0 # אורך מקטע קבוע
+    
+    st.markdown("---")
+    # 2. תא הריצה לשקיעת הבסיס (סרגל גרירה דינמי למצב נקודתי)
+    w_base_input = st.slider("שקיעת הבסיס הנבחרת w_base (מטר)", min_value=0.0, max_value=0.03, value=0.005, step=0.0005, format="%.4f")
+    
+    st.markdown("---")
+    st.subheader("📈 מאמצי חיכוך מקסימליים מהפרסיומטר t_max (kPa)")
+    
+    t_max = {}
+    default_t_max = {10: 120, 9: 110, 8: 100, 7: 95, 6: 90, 5: 85, 4: 80, 3: 75, 2: 70, 1: 65, 0: 0}
+    
+    for depth in range(10, -1, -1):
+        if depth == 0:
+            t_max[depth] = 0
+        else:
+            t_max[depth] = st.number_input(f"עומק {depth} מטר", min_value=0, max_value=500, value=default_t_max[depth], step=5)
+
+# --- פונקציית ליבה לחישוב המודל עבור שקיעת בסיס נתונה ---
+def run_pile_model(w_b):
+    w_v = {}
+    F_f = {}
+    P_v = {}
+    for node in range(10, -1, -1):
+        if node == 10:
+            w_v[node] = w_b
+            F_f[node] = U * dz * t_max[node]
+            P_v[node] = B * np.sqrt(w_b) if w_b > 0 else 0.0
+        else:
+            prev = node + 1
+            w_v[node] = w_v[prev] + (P_v[prev] * dz) / (E * A)
+            F_f[node] = U * dz * t_max[node] if node > 0 else 0
+            P_v[node] = P_v[prev] + F_f[prev]
+    return w_v, F_f, P_v
+
+# 1. חישוב המצב הנקודתי הנוכחי שנבחר בסליידר
+w_actual, F_actual, P_actual = run_pile_model(w_base_input)
+
+# 2. הרצת לולאה אוטומטית ליצירת עקומת עומס-שקיעה (Load-Settlement)
+w_base_range = np.linspace(0, 0.03, 100) # 100 נקודות מ-0 ועד 3 ס"מ
+top_loads = []
+top_settlements = []
+
+for wb in w_base_range:
+    _, _, P_v = run_pile_model(wb)
+    _, _, w_v = run_pile_model(wb)
+    top_loads.append(P_v[0])          # העומס בראש P0
+    top_settlements.append(w_v[0] * 1000) # שקיעה בראש במילמטרים
+
+# ארגון הטבלה להצגה
+df_results = pd.DataFrame({
+    "צומת (i)": list(range(11)),
+    "עומק z (מ')": [i * 1.0 for i in range(11)],
+    "שקיעה w_i (מטר)": [w_actual[i] for i in range(11)],
+    "מאמץ פרסיומטר t_max (kPa)": [t_max[i] for i in range(11)],
+    "כוח חיכוך מגויס F_fric (kN)": [F_actual[i] for i in range(11)],
+    "כוח פנימי במוט P_i (kN)": [P_actual[i] for i in range(11)]
+})
+
+with col_results:
+    st.header("📊 תוצאות המודל הגיאומכני")
+    
+    # מדדים מרכזיים
+    m1, m2, m3 = st.columns(3)
+    m1.metric("עומס כולל בראש P₀", f"{P_actual[0]:,.1f} kN")
+    m2.metric("שקיעה כוללת בראש w₀", f"{w_actual[0]*1000:.2f} מ\"מ")
+    m3.metric("כוח שהגיע לבסיס P_base", f"{P_actual[10]:,.1f} kN")
+    
+    # יצירת שני טורים פנימיים עבור הגרפים
+    col_graph1, col_graph2 = st.columns(2)
+    
+    with col_graph1:
+        st.markdown("### 📈 עקומת עומס-שקיעה בראש הכלונס")
+        fig1, ax1 = plt.subplots(figsize=(5, 4))
+        ax1.plot(top_loads, top_settlements, color='#C00000', linewidth=2.5, label='Load-Settlement')
+        # סימון הנקודה הנוכחית על הגרף
+        ax1.plot(P_actual[0], w_actual[0]*1000, marker='X', color='black', tokensize=10, label='מצב נוכחי')
+        ax1.set_xlabel("עומס בראש הכלונס P₀ (kN)")
+        ax1.set_ylabel("שקיעה בראש הכלונס w₀ (מ\"מ)")
+        ax1.invert_yaxis() # השקיעה גדלה כלפי מטה
+        ax1.grid(True, linestyle='--', alpha=0.5)
+        ax1.legend()
+        st.pyplot(fig1)
+
+    with col_graph2:
+        st.markdown("### 📉 פיזור מאמצים לאורך הכלונס")
+        fig2, ax2 = plt.subplots(figsize=(5, 4))
+        ax2.plot(df_results["כוח פנימי במוט P_i (kN)"], df_results["עומק z (מ')"], marker='o', color='#1F497D', linewidth=2)
+        ax2.set_xlabel("כוח פנימי במוט P_i (kN)")
+        ax2.set_ylabel("עומק z (מטר)")
+        ax2.invert_yaxis()
+        ax2.grid(True, linestyle='--', alpha=0.5)
+        st.pyplot(fig2)
+        
+    st.markdown("### טבלת אלמנטים מפורטת (עבור המצב הנוכחי)")
+    st.dataframe(df_results.style.format({
+        "שקיעה w_i (מטר)": "{:.4f}",
+        "כוח חיכוך מגויס F_fric (kN)": "{:,.1f}",
+        "כוח פנימי במוט P_i (kN)": "{:,.1f}"
+    }), use_container_width=True)
